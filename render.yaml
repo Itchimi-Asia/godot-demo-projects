@@ -1,0 +1,20 @@
+##############################################################################
+# Render Blueprint – Godot Demo Projects (Web Export)
+#
+# Usage:
+#   1. Push this file to your GitHub/GitLab repository.
+#   2. In the Render dashboard, go to "Blueprints" → "New Blueprint Instance".
+#   3. Connect your repo and Render will auto-detect this file.
+#
+# Docs: https://docs.render.com/infrastructure-as-code
+##############################################################################
+
+services:
+  - type: web
+    name: godot-demo-projects
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard          # "standard" recommended – build is RAM-heavy
+    region: oregon           # Change to your preferred region
+    healthCheckPath: /
+    envVars: []
