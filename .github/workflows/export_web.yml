@@ -9,8 +9,7 @@ env:
 
 jobs:
   export-html5:
-    if: github.repository == 'godotengine/godot-demo-projects'
-    name: Export projects to Web and deploy to GitHub Pages
+    name: Export projects to Web
     runs-on: ubuntu-24.04
     container:
       image: barichello/godot-ci:4.5.1
@@ -115,14 +114,70 @@ jobs:
           # Clean up files that don't need to be deployed.
           rm -f "$BASEDIR/.github/dist/header.html" "$BASEDIR/.github/dist/demos.html" "$BASEDIR/.github/dist/footer.html" "$BASEDIR/.github/dist/export_presets.cfg"
 
-      # Installing rsync is needed in order to deploy to GitHub Pages. Without it, the build will fail.
-      - name: Install rsync 📚
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-export
+          path: .github/dist/
+          retention-days: 3
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: export-html5
+    runs-on: ubuntu-24.04
+    environment:
+      name: staging
+      url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-export
+          path: .github/dist/
+
+      - name: Install rsync
         run: |
-          apt-get update -qq && apt-get install -qqq rsync
-      - name: Deploy to GitHub Pages 🚀
+          apt-get update -qq && apt-get install -qqq rsync 2>/dev/null || sudo apt-get update -qq && sudo apt-get install -qqq rsync
+
+      - name: Deploy to staging branch
         uses: JamesIves/github-pages-deploy-action@releases/v4
         with:
-          # The folder the action should deploy.
           folder: .github/dist
-          # Artifacts are large; don't keep the branch's history.
+          branch: gh-pages-staging
+          single-commit: true
+
+  deploy-production:
+    name: Deploy to Production
+    needs: deploy-staging
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+      url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-export
+          path: .github/dist/
+
+      - name: Install rsync
+        run: |
+          apt-get update -qq && apt-get install -qqq rsync 2>/dev/null || sudo apt-get update -qq && sudo apt-get install -qqq rsync
+
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@releases/v4
+        with:
+          folder: .github/dist
           single-commit: true

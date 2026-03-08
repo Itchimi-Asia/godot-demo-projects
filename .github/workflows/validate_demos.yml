@@ -1,0 +1,109 @@
+name: Validate Demo Exports
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '2d/**'
+      - '3d/**'
+      - 'audio/**'
+      - 'gui/**'
+      - 'loading/**'
+      - 'misc/**'
+      - 'viewport/**'
+      - 'xr/**'
+
+env:
+  GODOT_VERSION: 4.5.1
+
+jobs:
+  validate:
+    name: Validate changed demos export successfully
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.5.1
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Godot export templates
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates/
+          mv /root/.local/share/godot/export_templates/$GODOT_VERSION.stable ~/.local/share/godot/export_templates/$GODOT_VERSION.stable
+
+      - name: Detect and validate changed demos
+        run: |
+          apt-get update -qq && apt-get install -qqq git
+
+          git fetch origin ${{ github.base_ref }} --depth=1
+
+          DEMOS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -oP '^[^/]+/[^/]+/' | sort -u || true)
+
+          if [ -z "$DEMOS" ]; then
+            echo "No demo directories changed — nothing to validate."
+            exit 0
+          fi
+
+          # Demos excluded from web export
+          EXCLUDED="2d/glow/ 2d/navigation_mesh_chunks/ 2d/physics_tests/ 3d/labels_and_texts/ 3d/decals/ 3d/ik/ 3d/navigation_mesh_chunks/ 3d/occlusion_culling_mesh_lod/ 3d/particles/ 3d/physical_light_camera_units/ 3d/physics_tests/ 3d/variable_rate_shading/ 3d/volumetric_fog/ 3d/voxel/ audio/bpm_sync/ audio/device_changer/ audio/midi_piano/ audio/spectrum/ compute/ gui/msdf_font/ gui/translation/ loading/runtime_save_load/ misc/compute_shader_heightmap/ misc/large_world_coordinates/ misc/matrix_transform/ mobile/android_iap/ mobile/sensors/ mono/ networking/ plugins/ xr/openxr_character_centric_movement/ xr/openxr_composition_layers/ xr/openxr_hand_tracking_demo/ xr/openxr_origin_centric_movement/"
+
+          BASEDIR="$PWD"
+          FAILED=0
+          PASSED=0
+          SKIPPED=0
+
+          echo "$DEMOS" | while IFS= read -r demo; do
+            [ -z "$demo" ] && continue
+
+            # Skip excluded demos
+            if echo "$EXCLUDED" | grep -qF "$demo"; then
+              echo "⏭ SKIP: $demo (excluded from web export)"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            # Skip if no project.godot
+            if [ ! -f "$BASEDIR/$demo/project.godot" ]; then
+              echo "⏭ SKIP: $demo (no project.godot)"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            echo ""
+            echo "================================================================================"
+            echo "Validating: $demo"
+            echo "================================================================================"
+
+            OUTDIR=$(mktemp -d)
+            cd "$BASEDIR/$demo"
+
+            cp "$BASEDIR/.github/dist/export_presets.cfg" .
+            printf '[rendering]\n\ntextures/vram_compression/import_etc2_astc=true' >> project.godot
+
+            if godot --headless --export-release "Web" "$OUTDIR/index.html" 2>&1; then
+              if [ -f "$OUTDIR/index.html" ]; then
+                echo "✅ PASS: $demo"
+                PASSED=$((PASSED + 1))
+              else
+                echo "❌ FAIL: $demo (export completed but index.html not found)"
+                FAILED=$((FAILED + 1))
+              fi
+            else
+              echo "❌ FAIL: $demo (export command returned an error)"
+              FAILED=$((FAILED + 1))
+            fi
+
+            rm -rf "$OUTDIR"
+            cd "$BASEDIR"
+          done
+
+          echo ""
+          echo "================================================================================"
+          echo "Validation Summary: $PASSED passed, $FAILED failed, $SKIPPED skipped"
+          echo "================================================================================"
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED demo(s) failed to export. See logs above for details."
+            exit 1
+          fi

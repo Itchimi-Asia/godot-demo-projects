@@ -1,0 +1,177 @@
+name: PR Demo Preview
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '2d/**'
+      - '3d/**'
+      - 'audio/**'
+      - 'gui/**'
+      - 'loading/**'
+      - 'misc/**'
+      - 'viewport/**'
+      - 'xr/**'
+
+env:
+  GODOT_VERSION: 4.5.1
+
+jobs:
+  preview:
+    name: Build preview for changed demos
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.5.1
+    environment:
+      name: pr-preview
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Godot export templates
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates/
+          mv /root/.local/share/godot/export_templates/$GODOT_VERSION.stable ~/.local/share/godot/export_templates/$GODOT_VERSION.stable
+
+      - name: Detect changed demos
+        id: changes
+        run: |
+          apt-get update -qq && apt-get install -qqq git
+
+          # Ensure we have the base branch for comparison
+          git fetch origin ${{ github.base_ref }} --depth=1
+
+          # Find which top-level demo directories were modified
+          DEMOS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -oP '^[^/]+/[^/]+/' | sort -u || true)
+
+          if [ -z "$DEMOS" ]; then
+            echo "No demo directories changed."
+            echo "has_demos=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed demos:"
+            echo "$DEMOS"
+            echo "has_demos=true" >> "$GITHUB_OUTPUT"
+            # Store as a newline-separated list
+            echo "demos<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$DEMOS" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Export changed demos
+        if: steps.changes.outputs.has_demos == 'true'
+        run: |
+          apt-get update -qq && apt-get install -qqq imagemagick
+
+          # List of demos excluded from web export (same as export_web.yml)
+          EXCLUDED="2d/glow/ 2d/navigation_mesh_chunks/ 2d/physics_tests/ 3d/labels_and_texts/ 3d/decals/ 3d/ik/ 3d/navigation_mesh_chunks/ 3d/occlusion_culling_mesh_lod/ 3d/particles/ 3d/physical_light_camera_units/ 3d/physics_tests/ 3d/variable_rate_shading/ 3d/volumetric_fog/ 3d/voxel/ audio/bpm_sync/ audio/device_changer/ audio/midi_piano/ audio/spectrum/ compute/ gui/msdf_font/ gui/translation/ loading/runtime_save_load/ misc/compute_shader_heightmap/ misc/large_world_coordinates/ misc/matrix_transform/ mobile/android_iap/ mobile/sensors/ mono/ networking/ plugins/ xr/openxr_character_centric_movement/ xr/openxr_composition_layers/ xr/openxr_hand_tracking_demo/ xr/openxr_origin_centric_movement/"
+
+          BASEDIR="$PWD"
+          EXPORTED_COUNT=0
+          SKIPPED=""
+
+          while IFS= read -r demo; do
+            [ -z "$demo" ] && continue
+
+            # Skip excluded demos
+            if echo "$EXCLUDED" | grep -qF "$demo"; then
+              SKIPPED="$SKIPPED $demo"
+              echo "⏭ Skipping excluded demo: $demo"
+              continue
+            fi
+
+            # Skip if project.godot doesn't exist
+            if [ ! -f "$BASEDIR/$demo/project.godot" ]; then
+              echo "⏭ Skipping $demo (no project.godot found)"
+              continue
+            fi
+
+            echo ""
+            echo "================================================================================"
+            echo "Exporting preview for $demo..."
+            echo "================================================================================"
+
+            mkdir -p "$BASEDIR/.github/dist/$demo"
+            cd "$BASEDIR/$demo"
+
+            cp "$BASEDIR/.github/dist/export_presets.cfg" .
+            printf '[rendering]\n\ntextures/vram_compression/import_etc2_astc=true' >> project.godot
+
+            godot --verbose --headless --export-release "Web" "$BASEDIR/.github/dist/$demo/index.html" || true
+
+            if [ -f "$BASEDIR/.github/dist/$demo/index.html" ]; then
+              PROJECT_NAME=$(grep "config/name" project.godot | cut -d '"' -f 2 | tr -d "\n")
+              echo "<li><a href='$demo'><img width=\"64\" height=\"64\" src=\"$demo/index.icon.png\" alt=\"\"><p>$PROJECT_NAME</p></a></li>" >> "$BASEDIR/.github/dist/demos.html"
+              EXPORTED_COUNT=$((EXPORTED_COUNT + 1))
+            fi
+
+            cd "$BASEDIR"
+          done <<< "${{ steps.changes.outputs.demos }}"
+
+          # Build a simple index page for the preview
+          cat > "$BASEDIR/.github/dist/index.html" <<HTMLEOF
+          <!DOCTYPE html>
+          <html><head><title>PR #${{ github.event.number }} - Demo Preview</title>
+          <style>body{font-family:sans-serif;max-width:50rem;margin:2rem auto;padding:1rem;}
+          li{display:block;margin:0.5rem 0;} li a{display:flex;align-items:center;gap:0.5rem;}
+          li img{width:48px;height:48px;}</style></head>
+          <body><h1>PR #${{ github.event.number }} — Demo Preview</h1>
+          <p>Exported $EXPORTED_COUNT demo(s) changed in this pull request.</p>
+          <ul>$(cat "$BASEDIR/.github/dist/demos.html" 2>/dev/null || echo "<li>No demos exported</li>")</ul>
+          <p><em>Download this artifact and serve locally with a web server that sets
+          Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers.</em></p>
+          </body></html>
+          HTMLEOF
+
+          rm -f "$BASEDIR/.github/dist/demos.html"
+          echo "Exported $EXPORTED_COUNT demo(s) for preview."
+
+      - name: Upload preview artifact
+        if: steps.changes.outputs.has_demos == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-preview-pr-${{ github.event.number }}
+          path: .github/dist/
+          retention-days: 7
+
+      - name: Comment on PR with preview info
+        if: steps.changes.outputs.has_demos == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              `## Demo Preview Ready`,
+              ``,
+              `A preview build of the changed demos is available as a build artifact.`,
+              ``,
+              `**[Download Preview Artifact](${runUrl})**`,
+              ``,
+              `> To test locally: download the artifact, extract it, and serve with a web server`,
+              `> that sets \`Cross-Origin-Opener-Policy: same-origin\` and`,
+              `> \`Cross-Origin-Embedder-Policy: require-corp\` headers.`,
+              `>`,
+              `> Quick option: \`npx serve -l 8080 --cors\` (note: COOP/COEP headers`,
+              `> must be added separately, e.g. via a browser extension or reverse proxy).`,
+              ``,
+              `_This comment is automatically updated on each push._`,
+            ].join('\n');
+
+            // Check for existing bot comment to update instead of spamming
+            const comments = await github.rest.issues.listComments({
+              owner, repo, issue_number: context.issue.number,
+            });
+            const existing = comments.data.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Demo Preview Ready')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: context.issue.number, body,
+              });
+            }

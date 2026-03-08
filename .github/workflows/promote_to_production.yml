@@ -1,0 +1,36 @@
+name: Promote Staging to Production
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "promote" to confirm promotion to production'
+        required: true
+        type: string
+
+jobs:
+  promote:
+    name: Promote staging build to production
+    if: github.event.inputs.confirm == 'promote'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+      url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages-staging
+          fetch-depth: 1
+
+      - name: Install rsync
+        run: sudo apt-get update -qq && sudo apt-get install -qqq rsync
+
+      - name: Deploy staging content to production
+        uses: JamesIves/github-pages-deploy-action@releases/v4
+        with:
+          folder: .
+          branch: gh-pages
+          single-commit: true
